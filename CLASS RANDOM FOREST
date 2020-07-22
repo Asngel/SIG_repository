@@ -1,0 +1,109 @@
+####################################################
+################ CARGAR LIBRERÍAS ####################
+####################################################
+
+library(raster)
+library(rgdal)
+library(randomForest)
+library(RColorBrewer)
+
+############### FIJAR DIRECTORIO####################
+####################################################
+setwd("C:/Rstudio")
+
+######### CARGAR IMAGEN Y CAMBIAR NOMBRES############
+####################################################
+imagen <- brick("C:/qgis/Ban_1912.TIF")
+names(imagen) <- paste0("B", c(2,3,4,8))
+
+############# MOSTRAR IMAGENES#####################
+###################################################
+spplot(imagen)
+
+##########ASIGANR RASTER A LA VARIABLE "RBRICK"####
+###################################################
+rbrick<-imagen
+
+############ ESTADÁSTICAS DEL CONJUNTO RASTER######
+###################################################
+summary(rbrick)
+View(rbrick)
+############# PROYECTAR RASTER########################
+#rbrick <- projectRaster(rbrick,crs="+init=epsg:32717")
+#rbrick
+
+######################################################
+##################COMBINACIÓN DE BANDAS##############
+####################################################
+
+plotRGB(rbrick, r=3, g=2, b=1,  axes=TRUE, colNA="white", stretch='lin')
+
+plotRGB(rbrick, r=4, g=3, b=2,  axes=TRUE, colNA="white", stretch='lin')
+
+################## NDVI ############################
+####################################################
+
+ndvi <- (rbrick[[4]] - rbrick[[3]])/(rbrick[[4]] + rbrick[[3]])
+summary(ndvi)
+
+spplot(ndvi)
+
+cuts <-seq(minValue(ndvi),maxValue(ndvi),length.out=10)
+cuts = round(cuts,digits=2)
+col.regions = brewer.pal(length(cuts)+2, "RdYlGn")
+spplot(as(ndvi, 'SpatialGridDataFrame'),at=cuts,col.regions=col.regions,
+       colorkey=list(labels=list(at=cuts),at=cuts),pretty=TRUE,scales=list(draw=T))
+
+######################################################################
+################# CLASIFICACIÓN NO SUPERVISADA (7 CLASES) ############
+#####################################################################
+
+tablavalores <- getValues(rbrick)
+km <-kmeans(na.omit(tablavalores), 7)
+names(km)
+
+rNA <- setValues(raster(rbrick), 0)#crear un raster en blanco con valores por defecto 0
+for(i in 1:nlayers(rbrick)){ rNA[is.na(rbrick[[i]])] <- 1}# asignar valor de 1 a valores NA del raster rbrick
+rNA <- getValues(rNA)#convertir rNA en un vector de valores
+tablavalores <- as.data.frame(tablavalores)#convertir tablavalores en un data frame
+tablavalores$clase[rNA==0] <- km$cluster #Si rNA es 0, asignar el valor del cluster k-mean 
+tablavalores$clase[rNA==1] <- NA#Si rNA es 1, asignar NA
+clases <- raster(rbrick)
+clases <- setValues(clases, tablavalores$clase)#asignar los valores del raster clases a partir de  tablavalores$clase
+plot(clases, legend=FALSE, col=c("pink", "blue", "green","red","purple","yellow","black"))
+
+writeRaster(clases, filename="kmeans_clase7.tif", format="GTiff", overwrite=TRUE)
+
+#######################################################################
+####################### CLASIFICACIÓN SUPERVISADA ####################
+#####################################################################
+entrenamiento<-readOGR(".","Entrenamiento")
+
+head(entrenamiento@data)
+
+entrenamiento@data$Class
+
+clase <- rasterize(entrenamiento, rbrick, "Class")
+spplot(clase, scales=list(draw=T))
+
+mascara <- mask(rbrick, clase)
+entrenamiento_r <- addLayer(mascara, clase)
+plot(entrenamiento_r)
+
+names(entrenamiento_r)<- c("B2", "B3", "B4", "B8","clase")
+
+tablavalores <- getValues(entrenamiento_r)
+tablavalores <- na.omit(tablavalores)
+tablavalores <- as.data.frame(tablavalores)
+tablavalores$Class <- factor(tablavalores$clase, levels = c(1:7))
+
+library(randomForest)
+
+modelRF <- randomForest(x= tablavalores[,c(1:4)], y=tablavalores$clase,ntree=500, importance = T, do.trace=F)
+modelRF
+
+
+predLC <- predict(rbrick, model=modelRF, filename="predicccion.tif", na.rm=TRUE, overwrite=TRUE)
+save(modelRF, file="prediction_modelRF.RData")
+
+writeRaster(predLC, filename="prediccion.tif", format="GTiff", overwrite=TRUE)
